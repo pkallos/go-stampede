@@ -9,8 +9,6 @@ import (
     "time"
 )
 
-// var url *string = flag.String(""
-
 func usage() {
     fmt.Fprintf(os.Stderr, "usage: stampede [address]\n")
     flag.PrintDefaults()
