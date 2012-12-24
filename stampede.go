@@ -16,8 +16,10 @@ var (
     input_file       = flag.String("f", "", "Input file to read from.")
     clients          = flag.Int("c", 10, "The number of buffalo to spawn.")
     duration         = flag.Int("t", 30, "The duration of the stampede in seconds.")
+    wait_duration    = flag.Int("w", 1, "The time clients wait between HTPT requests (in seconds).")
     internet_mode    = flag.Bool("i", false, "Random sampling of the input file.")
     verbose          = flag.Bool("v", false, "Use verbose logging.")
+    benchmark_mode   = flag.Bool("b", false, "Benchmark mode, fire requests without waiting.")
     show_help        = flag.Bool("h", false, "Show this help.")
 )
 
@@ -56,6 +58,7 @@ func begin_stampede(endpoints []string) {
     // Spawn a new goroutine for each client requested
     // Is there a better go way to do this?
     for i := 0; i < * clients; i++ {
+
         go func (endpoints []string, codes chan<- int, done * bool) {
             max := len (endpoints)
             counter := 0
@@ -88,6 +91,10 @@ func begin_stampede(endpoints []string) {
                     codes <- 500
                 } else {
                     codes <- resp.StatusCode
+                }
+
+                if (*wait_duration >= 0) {
+                    time.Sleep(time.Duration(* wait_duration) * time.Second)
                 }
                 defer resp.Body.Close()
             }
@@ -228,7 +235,12 @@ func main() {
         os.Exit(1)
     }
 
-    fmt.Printf("Starting stampede with %d buffalo...\n", * clients)
+    // If benchmark mode is set, force wait_duration to 0
+    if (*benchmark_mode) {
+        *wait_duration = 0
+    }
+
+    fmt.Printf("Starting stampede with %d buffalo...\n", *clients)
     begin_stampede(endpoints)
 }
 
