@@ -10,17 +10,34 @@ import (
     "net/http"
     "math/rand"
     "time"
+    "sync"
 )
 
 var (
-    input_file       = flag.String("f", "", "Input file to read from.")
-    clients          = flag.Int("c", 10, "The number of buffalo to spawn.")
-    duration         = flag.Int("t", 30, "The duration of the stampede in seconds.")
-    wait_duration    = flag.Int("w", 1, "The time clients wait between HTPT requests (in seconds).")
-    internet_mode    = flag.Bool("i", false, "Random sampling of the input file.")
-    verbose          = flag.Bool("v", false, "Use verbose logging.")
-    benchmark_mode   = flag.Bool("b", false, "Benchmark mode, fire requests without waiting.")
-    show_help        = flag.Bool("h", false, "Show this help.")
+    input_file       = flag.String  ("f", "", "Input file to read from.")
+    clients          = flag.Int     ("c", 10, "The number of buffalo to spawn.")
+    duration         = flag.Int     ("t", 30, "The duration of the stampede in seconds.")
+    wait_duration    = flag.Int     ("w", 1, "The time clients wait between HTPT requests (in seconds).")
+    internet_mode    = flag.Bool    ("i", false, "Random sampling of the input file.")
+    verbose          = flag.Bool    ("v", false, "Use verbose logging.")
+    benchmark_mode   = flag.Bool    ("b", false, "Benchmark mode, fire requests without waiting.")
+    show_help        = flag.Bool    ("h", false, "Show this help.")
+
+    // This structure is not threadsafe AFAIK so
+    // it can only be modifed and read from a single
+    // goroutine.
+    codestats = map[string] int {
+        "2xx":      0,
+        "3xx":      0,
+        "4xx":      0,
+        "5xx":      0,
+        "success":  0,
+        "fail":     0,
+    }
+
+    // Some waitgroups, baby!
+    producers_wg sync.WaitGroup
+    consumers_wg sync.WaitGroup
 )
 
 func usage() {
@@ -31,87 +48,77 @@ func usage() {
 }
 
 func begin_stampede(endpoints []string) {
-    response_codes := make(chan int)
-    stop := make(chan bool)
-
-    // I want a flag to stop all of my N goroutines.
-    // Normally I'd use a channel but it needs to be
-    // read by all of the channels at once right?
-    // Not clear what the "Go" way would be
-    done := false
-
-    // This structure is not threadsafe AFAIK so
-    // it can only be modifed and read from a single
-    // goroutine.
-    var codestats = map[string] int {
-        "2xx":      0,
-        "3xx":      0,
-        "4xx":      0,
-        "5xx":      0,
-        "success":  0,
-        "fail":     0,
+    codes       := make(chan int)
+    timeout     := make(chan bool)
+    transport   := &http.Transport {
+        DisableKeepAlives: false,
     }
+    client      := &http.Client { Transport: transport }
 
-    // Seed the RNG
-    rand.Seed(time.Now().UTC().UnixNano())
+    // After timeout, fire done signals
+    go func() {
+        time.Sleep(time.Duration(*duration) * time.Second)
+        defer close(timeout)
+        for i := 0; i < *clients; i++ { timeout <- true }
+    }()
 
-    // Spawn a new goroutine for each client requested
-    // Is there a better go way to do this?
-    for i := 0; i < * clients; i++ {
-
-        go func (endpoints []string, codes chan<- int, done * bool) {
-            max := len (endpoints)
+    // Create the clients (producers)
+    for i := 0; i < *clients; i++ {
+        producers_wg.Add(1)
+        go func() {
+            var url string
+            max     := len(endpoints)
             counter := 0
 
-            // This is a pretty lame way of delcaring a string
-            url := ""
+// This feels hyper naughty but I swear I read somewhere to do this
+// to break out of a for-select
+sadtimeslabel:
+            for {
+                select {
+                    case <-timeout:
+                        break sadtimeslabel
+                    default:
+                        index := 0
 
-            // Loop until the done bit is set
-            for !(*done) {
-                index := 0
+                        // In "Internet Mode" we cycle through random URLs from the
+                        // input list
+                        if *internet_mode {
+                            index = rand.Int() % max
+                        // In normal mode we just iterate linearly
+                        } else {
+                            index = counter % max
+                            counter++
+                        }
+                        url = endpoints[index]
 
-                // In "Internet Mode" we cycle through random URLs from the
-                // input list
-                if (* internet_mode) {
-                    index = rand.Intn(max)
+                        if *verbose {
+                            fmt.Printf("Requesting url %s\n", url)
+                        }
 
-                // In normal mode we just iterate linearly
-                } else {
-                    index = counter % max
-                    counter++
+                        resp, err := client.Get(url)
+
+                        if err != nil {
+                            fmt.Fprintf(os.Stderr, "Failed to connect to %s, %s\n", url, err)
+                            codes <- 500
+                        } else {
+                            codes <- resp.StatusCode
+                        }
+
+                        if (*wait_duration >= 0) {
+                            time.Sleep(time.Duration(*wait_duration) * time.Second)
+                        }
+                        defer resp.Body.Close()
                 }
-                url = endpoints[index]
-
-                if (*verbose) {
-                    fmt.Printf("Requesting url %s\n", url)
-                }
-                resp, err := http.Get(url)
-                if err != nil {
-                    fmt.Fprintf(os.Stderr, "Failed to connect to %s, %s\n", url, err)
-                    codes <- 500
-                } else {
-                    codes <- resp.StatusCode
-                }
-
-                if (*wait_duration >= 0) {
-                    time.Sleep(time.Duration(* wait_duration) * time.Second)
-                }
-                defer resp.Body.Close()
             }
-            // There's probably a better "Go" way to do this
-            // I want to be able to signal that all the goroutines have run to
-            // completion...
-            codes <- -1
-        }(endpoints, response_codes, &done)
+            producers_wg.Done()
+        }()
     }
 
-    go func (codes <-chan int, codestats map[string] int, stop chan<- bool) {
-        halt := false
-        number_of_stop_signals := 0
-
-        for !halt {
-            code := <-codes
-            if (* verbose) {
+    // Build the consumer that aggregates the stats
+    consumers_wg.Add(1)
+    go func () {
+        for code := range(codes) {
+            if (*verbose) {
                 fmt.Printf("Received code %d\n", code)
             }
 
@@ -127,36 +134,14 @@ func begin_stampede(endpoints []string) {
             } else if (code >= 500 && code < 600) {
                 codestats["5xx"] = codestats["5xx"] + 1
                 codestats["fail"] = codestats["fail"] + 1
-            // This is a goofy flag, in theory when all the
-            // worker threads end they should fire a -1 through
-            // the channel. They get aggregated here.
-            } else if (code == -1 ) {
-                number_of_stop_signals++
-            }
-
-            // ON the first stop signal, report that we are "stopping"
-            if (number_of_stop_signals == 1) {
-                fmt.Printf("Stampede complete, closing final connections.\n")
-            }
-
-            if (number_of_stop_signals >= (*clients)) {
-                halt = true
             }
         }
+        consumers_wg.Done()
+    }()
 
-        // Cascade the halt signal down
-        stop <- true
-    }(response_codes, codestats, stop)
-
-    // Start the sleep timer
-    // Again I suspect there is a proper "Go" way to do this
-    go func (done * bool) {
-        time.Sleep(time.Duration(* duration) * time.Second)
-        *done = true
-    }(&done)
-
-    // Block until the stop channel fires
-    <-stop
+    producers_wg.Wait()
+    close(codes)
+    consumers_wg.Wait()
 
     // Print out the response code histogram
     fmt.Printf("\nReponse codes:\n")
@@ -199,6 +184,11 @@ func read_lines(path string) (lines []string, err error) {
     return
 }
 
+func init() {
+    // Seed the RNG
+    rand.Seed(time.Now().UTC().UnixNano())
+}
+
 func main() {
     var endpoints []string
 
@@ -227,7 +217,7 @@ func main() {
     // Otherwise use the first command line arg as the
     // endpoint
     } else if len(args) == 1 {
-        endpoints = []string{args[0]}
+        endpoints = []string { args[0] }
 
     // Otherwise somebody screwed up, bail
     } else {
@@ -243,6 +233,3 @@ func main() {
     fmt.Printf("Starting stampede with %d buffalo...\n", *clients)
     begin_stampede(endpoints)
 }
-
-
-
