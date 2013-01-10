@@ -37,7 +37,7 @@ var (
     profile          = flag.String  ("p", "", "Write out CPU profile.")
     clients          = flag.Int     ("c", 10, "The number of buffalo to spawn.")
     duration         = flag.Int     ("t", 30, "The duration of the stampede in seconds.")
-    wait_duration    = flag.Int     ("w", 1, "The time clients wait between HTPT requests (in seconds).")
+    wait_duration    = flag.Int     ("w", 1, "The time clients wait between HTTP requests (in seconds).")
     internet_mode    = flag.Bool    ("i", false, "Random sampling of the input file.")
     verbose          = flag.Bool    ("v", false, "Use verbose logging.")
     benchmark_mode   = flag.Bool    ("b", false, "Benchmark mode, fire requests without waiting.")

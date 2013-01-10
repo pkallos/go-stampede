@@ -15,7 +15,7 @@ Options:
   -i=false: Random sampling of the input file.
   -t=30: The duration of the stampede in seconds.
   -v=false: Use verbose logging.
-  -w=1: The time clients wait between HTPT requests (in seconds).
+  -w=1: The time clients wait between HTTP requests (in seconds).
 ```
 
 ## Input File Format
@@ -33,13 +33,13 @@ Another nice-to-have feature I want to implement is the ability to aproximately 
 The use case for this being that you have a cluster of production webservers and you want to accurately replay
 full requests (including headers) to another test clutser, at aproximately the same rate at which they arrive.
 
-Unclear what the input file format will be for that, ideally I would be able to read the default log format for 
+Unclear what the input file format will be for that, ideally I would be able to read the default log format for
 NGINX, lighttpd or varnish...
 
 ## Notes:
 
 Pretty sure that for this to run with any success you will need to alter your max# of file descriptors open.
-In linuxland you can do what I did and run `sudo vim /etc/security/limits.conf`, adding an entry for your 
+In linuxland you can do what I did and run `sudo vim /etc/security/limits.conf`, adding an entry for your
 user like.
 ```
 username  -  nofile 128000
